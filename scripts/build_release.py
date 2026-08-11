@@ -35,9 +35,10 @@ def project_version(root: Path) -> str:
 
 def included(path: Path, root: Path, output: Path) -> bool:
     relative = path.relative_to(root)
+    output_inside_project = output == root or root in output.parents
     return (
         path.is_file()
-        and output not in path.parents
+        and not (output_inside_project and output in path.parents)
         and not EXCLUDED_PARTS.intersection(relative.parts)
         and path.suffix not in EXCLUDED_SUFFIXES
         and path.name != "update.json"
@@ -54,6 +55,16 @@ def build(root: Path, output: Path, notes: str) -> tuple[Path, Path]:
         for path in sorted(root.rglob("*")):
             if included(path, root, output):
                 archive.write(path, Path("deadspot-sentinel") / path.relative_to(root))
+    with zipfile.ZipFile(archive_path) as archive:
+        packaged = set(archive.namelist())
+    required = {
+        "deadspot-sentinel/install.sh",
+        "deadspot-sentinel/updater.sh",
+        "deadspot-sentinel/run.py",
+    }
+    if not required.issubset(packaged):
+        archive_path.unlink(missing_ok=True)
+        raise RuntimeError("Release archive is missing required application files.")
     digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
     manifest_path = output / "update.json"
     manifest_path.write_text(
