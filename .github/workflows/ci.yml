@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Validate Python and shell sources
+        run: |
+          python -m compileall -q deadspot_sentinel run.py scripts tests
+          python -m unittest discover -s tests -v
+          bash -n install.sh launcher.sh updater.sh
+      - name: Build and inspect the update package
+        run: |
+          python scripts/build_release.py --output-dir dist
+          python -m json.tool dist/update.json >/dev/null
+          unzip -t dist/deadspot-sentinel-v*.zip

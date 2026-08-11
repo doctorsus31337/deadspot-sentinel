@@ -1,0 +1,66 @@
+name: Publish verified release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deadspot-sentinel-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Validate source
+        run: |
+          python -m compileall -q deadspot_sentinel run.py scripts tests
+          python -m unittest discover -s tests -v
+          bash -n install.sh launcher.sh updater.sh
+      - name: Read version
+        id: version
+        run: |
+          version="$(python -c 'from deadspot_sentinel import __version__; print(__version__)')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Skip an existing version
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build release assets
+        if: steps.existing.outputs.exists == 'false'
+        run: python scripts/build_release.py --output-dir dist
+      - name: Tag source and publish release
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            "dist/deadspot-sentinel-v${VERSION}.zip" \
+            "dist/update.json" \
+            --title "DeadSpot Sentinel $TAG" \
+            --generate-notes
