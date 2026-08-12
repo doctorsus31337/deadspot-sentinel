@@ -31,9 +31,16 @@ class AutostartTests(unittest.TestCase):
 
 
 class FakeResponse(io.BytesIO):
-    def __init__(self, payload: dict[str, object] | bytes) -> None:
+    def __init__(
+        self,
+        payload: dict[str, object] | bytes,
+        content_length: bool = False,
+    ) -> None:
         super().__init__(
             payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+        )
+        self.headers = (
+            {"Content-Length": str(len(self.getvalue()))} if content_length else {}
         )
 
     def __enter__(self):
@@ -125,6 +132,31 @@ class UpdateInstallerTests(unittest.TestCase):
             )
             self.assertTrue((source / "install.sh").is_file())
             self.assertTrue((source / "updater.sh").is_file())
+
+    def test_prepare_reports_download_and_verification_progress(self):
+        payload = self._archive()
+        events: list[tuple[str, int]] = []
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = UpdateInstaller(
+                lambda *_args, **_kwargs: FakeResponse(payload, content_length=True),
+                Path(directory),
+            ).prepare(
+                self._info(payload),
+                lambda message, percent: events.append((message, percent)),
+            )
+            self.assertEqual(source.name, "deadspot-sentinel")
+
+        self.assertEqual(events[0][1], 2)
+        self.assertEqual(
+            events[-1], ("Update verified and ready to install.", 100)
+        )
+        self.assertTrue(
+            any(" of " in message and percent <= 70 for message, percent in events)
+        )
+        self.assertTrue(any("SHA-256" in message for message, _percent in events))
+        measured = [percent for _message, percent in events if percent >= 0]
+        self.assertEqual(measured, sorted(measured))
 
     def test_prepare_rejects_checksum_mismatch(self):
         payload = self._archive()
