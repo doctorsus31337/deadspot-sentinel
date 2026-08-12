@@ -36,6 +36,12 @@ from .system_integration import (
     UpdateInfo,
     UpdateInstaller,
 )
+from .temperature import (
+    TemperatureLevel,
+    TemperatureReader,
+    TemperatureReading,
+    next_temperature_level,
+)
 from .ui import (
     COLORS,
     AlertPopup,
@@ -108,6 +114,20 @@ class SpeedWorker(QRunnable):
         )
 
 
+class TemperatureSignals(QObject):
+    completed = pyqtSignal(object)
+
+
+class TemperatureWorker(QRunnable):
+    def __init__(self, reader: TemperatureReader) -> None:
+        super().__init__()
+        self.reader = reader
+        self.signals = TemperatureSignals()
+
+    def run(self) -> None:
+        self.signals.completed.emit(self.reader.read())
+
+
 class UpdateSignals(QObject):
     completed = pyqtSignal(object, str)
 
@@ -151,6 +171,7 @@ class SentinelApp(QObject):
         self.inspector = NetworkInspector()
         self.recovery = RecoveryManager()
         self.speed_sampler = ThroughputSampler()
+        self.temperature_reader = TemperatureReader()
         self.pool = QThreadPool.globalInstance()
         self.window = StatusWindow(
             self.config.automatic_failover,
@@ -163,8 +184,14 @@ class SentinelApp(QObject):
         self.timer = QTimer(self)
         self.timer.setInterval(self.config.check_interval_ms)
         self.timer.timeout.connect(self.request_check)
+        self.temperature_timer = QTimer(self)
+        self.temperature_timer.setInterval(
+            max(2, self.config.temperature_poll_seconds) * 1000
+        )
+        self.temperature_timer.timeout.connect(self.request_temperature)
         self.busy = False
         self.speed_busy = False
+        self.temperature_busy = False
         self.update_busy = False
         self.last_snapshot: NetworkSnapshot | None = None
         self.had_online_state = False
@@ -175,6 +202,7 @@ class SentinelApp(QObject):
         self.speed_samples: dict[str, SpeedSample] = {}
         self.speed_active_key = ""
         self.speed_active_stable_checks = 0
+        self.temperature_level = TemperatureLevel.UNAVAILABLE
 
         self.window.reconnect_requested.connect(self.reconnect)
         self.window.prefer_requested.connect(self.prefer)
@@ -198,18 +226,33 @@ class SentinelApp(QObject):
         self.tray.quit_action.triggered.connect(self.quit)
 
     def start(self) -> None:
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            QMessageBox.warning(
-                None,
-                "DeadSpot Sentinel",
-                "No system tray was detected. The status window will remain available instead.",
-            )
-            self.window.show()
         self.tray.tray.show()
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            QTimer.singleShot(1000, lambda: self._wait_for_system_tray(1))
         self.request_check()
+        self.request_temperature()
         self.timer.start()
+        self.temperature_timer.start()
         if self.config.auto_update_checks or self.config.auto_install_updates:
             QTimer.singleShot(5000, lambda: self.check_updates(manual=False))
+
+    def _wait_for_system_tray(self, attempt: int) -> None:
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        if attempt < 15:
+            QTimer.singleShot(
+                1000, lambda next_attempt=attempt + 1: self._wait_for_system_tray(next_attempt)
+            )
+            return
+        self.outages.append(
+            {
+                "event": "system_tray_unavailable",
+                "at": datetime.now(UTC).isoformat(),
+                "waited_seconds": attempt,
+            }
+        )
+        self.window.show()
+        self.window.raise_()
 
     def show_window(self) -> None:
         self.window.show()
@@ -341,6 +384,78 @@ class SentinelApp(QObject):
         if self.last_snapshot:
             self._maybe_schedule_speed_sample(self.last_snapshot)
 
+    def request_temperature(self) -> None:
+        if self.temperature_busy:
+            return
+        self.temperature_busy = True
+        worker = TemperatureWorker(self.temperature_reader)
+        worker.signals.completed.connect(self._temperature_ready)
+        self.pool.start(worker)
+
+    def _temperature_ready(self, reading: TemperatureReading) -> None:
+        self.temperature_busy = False
+        previous = self.temperature_level
+        current = next_temperature_level(
+            reading.celsius,
+            previous,
+            self.config.temperature_warning_c,
+            self.config.temperature_critical_c,
+        )
+        self.temperature_level = current
+        self.window.temperature_panel.update_reading(reading, current)
+        self.tray.update_temperature(reading, current)
+        if not self.config.temperature_alerts_enabled or reading.celsius is None:
+            return
+        ranks = {
+            TemperatureLevel.UNAVAILABLE: 0,
+            TemperatureLevel.NORMAL: 0,
+            TemperatureLevel.HIGH: 1,
+            TemperatureLevel.CRITICAL: 2,
+        }
+        if ranks[current] > ranks[previous]:
+            if current is TemperatureLevel.CRITICAL:
+                title = "CRITICAL TEMP — COOL IMMEDIATELY"
+                body = (
+                    f"CPU temperature reached {reading.celsius:.1f} °C. Pause heavy workloads, "
+                    "improve airflow, and check that the cooling vents are unobstructed."
+                )
+                color = COLORS["red"]
+            else:
+                title = "HIGH TEMP — COOL ASAP"
+                body = (
+                    f"CPU temperature reached {reading.celsius:.1f} °C. Consider reducing the workload "
+                    "and giving the laptop more airflow."
+                )
+                color = COLORS["amber"]
+            self.popup.show_alert(title, body, color, "Open status", self.show_window)
+            self.outages.append(
+                {
+                    "event": "temperature_alert",
+                    "at": datetime.now(UTC).isoformat(),
+                    "level": current.value,
+                    "celsius": reading.celsius,
+                    "source": reading.source,
+                }
+            )
+        elif (
+            current is TemperatureLevel.NORMAL
+            and previous in {TemperatureLevel.HIGH, TemperatureLevel.CRITICAL}
+        ):
+            self.popup.show_alert(
+                "CPU temperature stabilized",
+                f"CPU temperature returned to {reading.celsius:.1f} °C.",
+                COLORS["green"],
+            )
+            QTimer.singleShot(7000, self.popup.hide)
+            self.outages.append(
+                {
+                    "event": "temperature_recovered",
+                    "at": datetime.now(UTC).isoformat(),
+                    "celsius": reading.celsius,
+                    "source": reading.source,
+                }
+            )
+
     def set_speed_interval(self, minutes: int) -> None:
         self.config.speed_sample_interval_minutes = max(0, int(minutes))
         self.config.save()
@@ -389,6 +504,9 @@ class SentinelApp(QObject):
             autostart_enabled=self.autostart.enabled(),
             notify_when_restored=self.config.notify_when_restored,
             speed_interval_minutes=self.config.speed_sample_interval_minutes,
+            temperature_alerts_enabled=self.config.temperature_alerts_enabled,
+            temperature_warning_c=self.config.temperature_warning_c,
+            temperature_critical_c=self.config.temperature_critical_c,
             auto_update_checks=self.config.auto_update_checks,
             auto_install_updates=self.config.auto_install_updates,
         )
@@ -402,6 +520,16 @@ class SentinelApp(QObject):
         self.config.notify_when_restored = bool(values["notify_when_restored"])
         self.config.speed_sample_interval_minutes = int(
             values["speed_interval_minutes"]
+        )
+        self.config.temperature_alerts_enabled = bool(
+            values["temperature_alerts_enabled"]
+        )
+        self.config.temperature_warning_c = max(
+            60, min(100, int(values["temperature_warning_c"]))
+        )
+        self.config.temperature_critical_c = max(
+            self.config.temperature_warning_c + 1,
+            min(110, int(values["temperature_critical_c"])),
         )
         self.config.auto_update_checks = bool(values["auto_update_checks"])
         self.config.auto_install_updates = bool(values["auto_install_updates"])
@@ -417,6 +545,7 @@ class SentinelApp(QObject):
         interval_box.blockSignals(False)
         if self.last_snapshot:
             self._maybe_schedule_speed_sample(self.last_snapshot)
+        self.request_temperature()
         if theme_changed:
             QTimer.singleShot(150, self.restart)
         elif self.config.auto_update_checks or self.config.auto_install_updates:
@@ -677,6 +806,7 @@ class SentinelApp(QObject):
 
     def quit(self) -> None:
         self.timer.stop()
+        self.temperature_timer.stop()
         self.tray.tray.hide()
         self.qt_app.quit()
 

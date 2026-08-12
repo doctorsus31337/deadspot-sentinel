@@ -11,7 +11,7 @@ DoctorSUS brainstormed this application due to his lack of patience for living
 in an internet dead spot. He needed a better solution than discovering an outage
 after everything had already crashed—and that is when this brainchild was born.
 
-## Highlights in v0.4.0
+## Highlights in v0.4.1
 
 - Roughly one-second connectivity checks with interface-bound ICMP and HTTP probes.
 - Distinct green, amber, and red sentinel-shield tray states.
@@ -19,6 +19,11 @@ after everything had already crashed—and that is when this brainchild was born
 - Dual-Wi-Fi status, reconnect controls, route preference, and opt-in failover.
 - Lightweight 2 MB download-only throughput samples on the active route.
 - Four themes, XFCE autostart, activity logs, and a terminal-free launcher.
+- A five-second CPU-temperature monitor using Linux hardware sensors, with
+  configurable high and critical thresholds, hysteresis, tray status, and
+  persistent **HIGH TEMP — COOL ASAP** alerts.
+- A 15-second cold-login tray grace period that eliminates false “no system tray”
+  warnings while XFCE is still starting.
 - A repository-locked updater that verifies SHA-256 and rejects unsafe ZIP paths,
   symlinks, oversized archives, and incomplete packages before installation.
 - GitHub Actions CI plus automatic versioned release and update-manifest creation.
@@ -108,6 +113,19 @@ python3 scripts/build_release.py --output-dir dist
 ```
 
 The application itself requires Python 3.11 or later and PyQt6 6.7 or later.
+
+## CPU temperature monitoring
+
+Sentinel reads CPU-focused sensors exposed through Linux `hwmon`, with a thermal
+zone fallback. It does not install a daemon or run a recurring shell command.
+The hottest recognized CPU sensor is shown in the main dashboard and tray menu.
+
+Defaults are **85 °C** for high and **95 °C** for critical. Both values and the
+alert toggle are available under **Settings → Preferences**. After an alert,
+the temperature must fall at least 5 °C below the warning boundary before the
+state returns to normal; this prevents popup spam while a reading hovers near a
+threshold. Missing or unsupported sensors are reported as unavailable and never
+produce a heat warning.
 
 ## License
 

@@ -25,6 +25,10 @@ class AppConfig:
     popup_on_primary_failure: bool = True
     speed_sample_interval_minutes: int = 15
     speed_sample_bytes: int = 2_000_000
+    temperature_poll_seconds: int = 5
+    temperature_alerts_enabled: bool = True
+    temperature_warning_c: int = 85
+    temperature_critical_c: int = 95
     theme: str = "Midnight Violet"
     notify_when_restored: bool = True
     auto_update_checks: bool = False
