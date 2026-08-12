@@ -132,6 +132,11 @@ class UpdateSignals(QObject):
     completed = pyqtSignal(object, str)
 
 
+class InstallSignals(QObject):
+    completed = pyqtSignal(object, str)
+    progress = pyqtSignal(str, int)
+
+
 class UpdateWorker(QRunnable):
     def __init__(self, checker: UpdateChecker) -> None:
         super().__init__()
@@ -150,11 +155,13 @@ class InstallWorker(QRunnable):
         super().__init__()
         self.installer = installer
         self.info = info
-        self.signals = UpdateSignals()
+        self.signals = InstallSignals()
 
     def run(self) -> None:
         try:
-            self.signals.completed.emit(self.installer.prepare(self.info), "")
+            self.signals.completed.emit(
+                self.installer.prepare(self.info, self.signals.progress.emit), ""
+            )
         except Exception as exc:
             self.signals.completed.emit(None, str(exc))
 
@@ -617,12 +624,13 @@ class SentinelApp(QObject):
         if self.update_busy:
             return
         self.update_busy = True
-        self.popup.show_alert(
+        self.popup.show_progress_alert(
             "Downloading verified update",
             f"DeadSpot Sentinel {info.latest_version} is being downloaded and checked.",
             COLORS["accent"],
         )
         worker = InstallWorker(self.update_installer, info)
+        worker.signals.progress.connect(self.popup.update_progress)
 
         def completed(prepared_source: Path | None, error: str) -> None:
             self.update_busy = False
@@ -639,7 +647,13 @@ class SentinelApp(QObject):
             try:
                 self.update_installer.launch(prepared_source)
             except Exception as exc:
-                QMessageBox.warning(self.window, "Update Launch Failed", str(exc))
+                self.popup.show_alert(
+                    "Update launch failed",
+                    str(exc),
+                    COLORS["red"],
+                    "Open status",
+                    self.show_window,
+                )
                 return
             self.timer.stop()
             self.tray.tray.hide()

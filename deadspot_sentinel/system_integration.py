@@ -11,6 +11,7 @@ import sys
 import tempfile
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -174,7 +175,38 @@ class UpdateInstaller:
         if info.download_url != expected:
             raise ValueError("Refusing a package outside the official GitHub release.")
 
-    def prepare(self, info: UpdateInfo) -> Path:
+    @staticmethod
+    def _report(
+        callback: Callable[[str, int], None] | None,
+        message: str,
+        percent: int,
+    ) -> None:
+        if callback is not None:
+            callback(message, percent)
+
+    @staticmethod
+    def _content_length(response) -> int | None:
+        headers = getattr(response, "headers", None)
+        raw = headers.get("Content-Length") if headers is not None else None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    @staticmethod
+    def _size_label(size: int) -> str:
+        if size < 1024:
+            return f"{size} B"
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size / (1024 * 1024):.1f} MB"
+
+    def prepare(
+        self,
+        info: UpdateInfo,
+        progress: Callable[[str, int], None] | None = None,
+    ) -> Path:
         self._validate_release_url(info)
         staging_parent = self.staging_dir
         if staging_parent is not None:
@@ -190,23 +222,45 @@ class UpdateInstaller:
             headers={"User-Agent": f"DeadSpot-Sentinel/{__version__}"},
         )
         try:
+            self._report(progress, "Connecting to the verified GitHub release…", 2)
             with self.opener(request, timeout=30) as response, archive_path.open(
                 "wb"
             ) as stream:
+                total = self._content_length(response)
+                if total is not None and total > self.MAX_ARCHIVE_BYTES:
+                    raise ValueError("The update archive is unexpectedly large.")
+                if total is None:
+                    self._report(progress, "Downloading verified update…", -1)
                 while chunk := response.read(64 * 1024):
                     size += len(chunk)
                     if size > self.MAX_ARCHIVE_BYTES:
                         raise ValueError("The update archive is unexpectedly large.")
                     digest.update(chunk)
                     stream.write(chunk)
+                    if total is not None:
+                        percent = min(70, max(3, round((size / total) * 70)))
+                        self._report(
+                            progress,
+                            "Downloading verified update… "
+                            f"{self._size_label(size)} of {self._size_label(total)}",
+                            percent,
+                        )
             if not size:
                 raise ValueError("The update download was empty.")
+            self._report(
+                progress,
+                f"Download complete ({self._size_label(size)}). Verifying SHA-256…",
+                76,
+            )
             if not re.fullmatch(r"[0-9a-f]{64}", info.sha256.lower()):
                 raise ValueError("The update digest is invalid.")
             if digest.hexdigest() != info.sha256.lower():
                 raise ValueError("The downloaded update failed SHA-256 verification.")
+            self._report(progress, "Checksum verified. Inspecting archive safety…", 86)
             destination = staging / "extracted"
+            self._report(progress, "Archive is safe. Extracting update…", 93)
             self._extract_verified_archive(archive_path, destination)
+            self._report(progress, "Update verified and ready to install.", 100)
             return destination / "deadspot-sentinel"
         except Exception:
             shutil.rmtree(staging, ignore_errors=True)

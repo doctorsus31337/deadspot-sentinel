@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -175,6 +176,8 @@ QLineEdit {{ background: #111116; border: 1px solid {COLORS["border"]}; border-r
 QMenu {{ background: {COLORS["panel"]}; color: {COLORS["text"]}; border: 1px solid {COLORS["border"]}; padding: 5px; }}
 QMenu::item {{ padding: 6px 22px 6px 10px; }}
 QMenu::item:selected {{ background: #34343d; }}
+QProgressBar {{ background: #111116; border: 1px solid {COLORS["border"]}; border-radius: 6px; color: {COLORS["text"]}; min-height: 20px; text-align: center; }}
+QProgressBar::chunk {{ background: {COLORS["accent"]}; border-radius: 5px; }}
 """
 
 
@@ -870,6 +873,12 @@ class AlertPopup(QFrame):
         self.body.setWordWrap(True)
         layout.addWidget(self.title)
         layout.addWidget(self.body)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFormat("Starting…")
+        self.progress.hide()
+        layout.addWidget(self.progress)
         buttons = QHBoxLayout()
         self.action = QPushButton()
         self.action.hide()
@@ -896,6 +905,7 @@ class AlertPopup(QFrame):
         action_label: str = "",
         callback: Callable[[], None] | None = None,
     ) -> None:
+        self.progress.hide()
         self.title.setText(title)
         self.body.setText(body)
         self.setStyleSheet(
@@ -905,15 +915,40 @@ class AlertPopup(QFrame):
         self.action.setText(action_label)
         self.action.setVisible(bool(action_label and callback))
         self.adjustSize()
+        self._move_to_corner()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def show_progress_alert(self, title: str, body: str, color: str) -> None:
+        self.show_alert(title, body, color)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFormat("Starting…")
+        self.progress.show()
+        self.adjustSize()
+        self._move_to_corner()
+
+    def update_progress(self, message: str, percent: int) -> None:
+        self.body.setText(message)
+        if percent < 0:
+            self.progress.setRange(0, 0)
+            self.progress.setFormat("Downloading…")
+        else:
+            value = max(0, min(100, percent))
+            self.progress.setRange(0, 100)
+            self.progress.setValue(value)
+            self.progress.setFormat(f"{value}%")
+        self.adjustSize()
+        self._move_to_corner()
+
+    def _move_to_corner(self) -> None:
         screen = QApplication.primaryScreen()
         if screen:
             area = screen.availableGeometry()
             self.move(
                 area.right() - self.width() - 18, area.bottom() - self.height() - 18
             )
-        self.show()
-        self.raise_()
-        self.activateWindow()
 
 
 class TrayController:

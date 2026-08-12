@@ -11,7 +11,7 @@ DoctorSUS brainstormed this application due to his lack of patience for living
 in an internet dead spot. He needed a better solution than discovering an outage
 after everything had already crashed—and that is when this brainchild was born.
 
-## Highlights in v0.4.1
+## Highlights in v0.4.2
 
 - Roughly one-second connectivity checks with interface-bound ICMP and HTTP probes.
 - Distinct green, amber, and red sentinel-shield tray states.
@@ -26,6 +26,8 @@ after everything had already crashed—and that is when this brainchild was born
   warnings while XFCE is still starting.
 - Background release polling every six hours when update checks are enabled, so
   post-v0.4.1 updates can install without restarting or manually checking.
+- Live download, checksum, archive-safety, and extraction progress in the update
+  popup, including an indeterminate fallback when a server omits file size.
 - A repository-locked updater that verifies SHA-256 and rejects unsafe ZIP paths,
   symlinks, oversized archives, and incomplete packages before installation.
 - GitHub Actions CI plus automatic versioned release and update-manifest creation.
