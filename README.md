@@ -24,6 +24,8 @@ after everything had already crashed—and that is when this brainchild was born
   persistent **HIGH TEMP — COOL ASAP** alerts.
 - A 15-second cold-login tray grace period that eliminates false “no system tray”
   warnings while XFCE is still starting.
+- Background release polling every six hours when update checks are enabled, so
+  post-v0.4.1 updates can install without restarting or manually checking.
 - A repository-locked updater that verifies SHA-256 and rejects unsafe ZIP paths,
   symlinks, oversized archives, and incomplete packages before installation.
 - GitHub Actions CI plus automatic versioned release and update-manifest creation.
@@ -70,6 +72,12 @@ The one-time upgrade from v0.3.1 to v0.4.0 must be installed manually because
 v0.3.1 contains only a manifest checker. Starting with v0.4.0, enable
 **Settings → Automatically Install Verified Updates** to let future releases
 download, verify, install, and restart without a terminal.
+
+Because the already-published v0.4.0 checks at startup but does not poll again
+while continuously running, the v0.4.0 → v0.4.1 live test requires one manual
+**About → Check for Updates** after v0.4.1 is published. Version 0.4.1 adds a
+six-hour background poll, so subsequent releases are fully hands-off while the
+automatic-update checkbox remains enabled.
 
 The updater accepts only the release manifest and versioned ZIP assets published
 by `doctorsus31337/deadspot-sentinel`. It checks the package against the manifest's

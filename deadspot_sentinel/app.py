@@ -189,6 +189,9 @@ class SentinelApp(QObject):
             max(2, self.config.temperature_poll_seconds) * 1000
         )
         self.temperature_timer.timeout.connect(self.request_temperature)
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(6 * 60 * 60 * 1000)
+        self.update_timer.timeout.connect(lambda: self.check_updates(manual=False))
         self.busy = False
         self.speed_busy = False
         self.temperature_busy = False
@@ -233,6 +236,7 @@ class SentinelApp(QObject):
         self.request_temperature()
         self.timer.start()
         self.temperature_timer.start()
+        self._sync_update_timer()
         if self.config.auto_update_checks or self.config.auto_install_updates:
             QTimer.singleShot(5000, lambda: self.check_updates(manual=False))
 
@@ -494,8 +498,15 @@ class SentinelApp(QObject):
         self.config.auto_update_checks = enabled or self.config.auto_update_checks
         self.config.save()
         self.window.set_auto_update_state(enabled)
+        self._sync_update_timer()
         if enabled:
             self.check_updates(manual=False)
+
+    def _sync_update_timer(self) -> None:
+        if self.config.auto_update_checks or self.config.auto_install_updates:
+            self.update_timer.start()
+        else:
+            self.update_timer.stop()
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(
@@ -537,6 +548,7 @@ class SentinelApp(QObject):
             self.config.auto_update_checks = True
         self.config.save()
         self.window.set_auto_update_state(self.config.auto_install_updates)
+        self._sync_update_timer()
         interval_box = self.window.speed_panel.interval
         interval_box.blockSignals(True)
         selected = interval_box.findData(self.config.speed_sample_interval_minutes)
@@ -807,6 +819,7 @@ class SentinelApp(QObject):
     def quit(self) -> None:
         self.timer.stop()
         self.temperature_timer.stop()
+        self.update_timer.stop()
         self.tray.tray.hide()
         self.qt_app.quit()
 
