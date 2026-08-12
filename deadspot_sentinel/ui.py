@@ -30,12 +30,14 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
 
 from .network import AdapterHealth, HealthState, NetworkSnapshot, SpeedSample
+from .temperature import TemperatureLevel, TemperatureReading
 
 THEMES = {
     "Midnight Violet": {
@@ -162,6 +164,7 @@ QPushButton:hover {{ border-color: {COLORS["accent"]}; background: #303038; }}
 QCheckBox {{ spacing: 8px; }}
 QComboBox {{ background: #25252c; border: 1px solid #43434c; border-radius: 6px; padding: 7px 10px; min-width: 105px; }}
 QComboBox QAbstractItemView {{ background: {COLORS["panel"]}; color: {COLORS["text"]}; selection-background-color: #34343d; }}
+QSpinBox {{ background: #25252c; border: 1px solid #43434c; border-radius: 6px; padding: 7px 10px; min-width: 80px; }}
 QScrollArea {{ border: none; }}
 QMenuBar {{ background: {COLORS["panel"]}; color: {COLORS["text"]}; border-bottom: 1px solid {COLORS["border"]}; padding: 2px; }}
 QMenuBar::item {{ padding: 6px 12px; background: transparent; }}
@@ -419,6 +422,58 @@ class SpeedPanel(QFrame):
         self.schedule.setText(text)
 
 
+class TemperaturePanel(QFrame):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("card")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+
+        top = QHBoxLayout()
+        title = QLabel("SYSTEM THERMALS")
+        title.setFont(QFont(title.font().family(), 11, QFont.Weight.Bold))
+        self.state = QLabel("READING SENSOR")
+        self.state.setStyleSheet(f"color: {COLORS['muted']}; font-weight: 700;")
+        top.addWidget(title)
+        top.addStretch(1)
+        top.addWidget(self.state)
+        layout.addLayout(top)
+
+        self.value = QLabel("CPU TEMP: -- °C")
+        self.value.setFont(QFont(self.value.font().family(), 17, QFont.Weight.Bold))
+        layout.addWidget(self.value)
+        self.detail = QLabel("Reading Linux hardware-monitor sensors every five seconds.")
+        self.detail.setObjectName("muted")
+        self.detail.setWordWrap(True)
+        layout.addWidget(self.detail)
+
+    def update_reading(
+        self, reading: TemperatureReading, level: TemperatureLevel
+    ) -> None:
+        if reading.celsius is None:
+            self.value.setText("CPU TEMP: UNAVAILABLE")
+            self.value.setStyleSheet(f"color: {COLORS['muted']};")
+            self.state.setText("NO SENSOR")
+            self.state.setStyleSheet(
+                f"color: {COLORS['muted']}; font-weight: 700;"
+            )
+            self.detail.setText(reading.detail)
+            return
+        labels = {
+            TemperatureLevel.NORMAL: ("NORMAL", COLORS["green"]),
+            TemperatureLevel.HIGH: ("HIGH — COOL ASAP", COLORS["amber"]),
+            TemperatureLevel.CRITICAL: ("CRITICAL — COOL NOW", COLORS["red"]),
+        }
+        label, color = labels.get(level, ("READING", COLORS["muted"]))
+        self.value.setText(f"CPU TEMP: {reading.celsius:.1f} °C")
+        self.value.setStyleSheet(f"color: {color};")
+        self.state.setText(label)
+        self.state.setStyleSheet(f"color: {color}; font-weight: 700;")
+        source = reading.source or "Linux hardware monitor"
+        self.detail.setText(f"Sensor: {source} • {reading.detail}")
+
+
 class StatusWindow(QMainWindow):
     reconnect_requested = pyqtSignal(str, str)
     prefer_requested = pyqtSignal(str)
@@ -434,6 +489,7 @@ class StatusWindow(QMainWindow):
     exit_requested = pyqtSignal()
     autostart_changed = pyqtSignal(bool)
     auto_update_changed = pyqtSignal(bool)
+    temperature_alert_test_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -479,6 +535,9 @@ class StatusWindow(QMainWindow):
         self.subtitle.setObjectName("muted")
         self.subtitle.setWordWrap(True)
         outer.addWidget(self.subtitle)
+
+        self.temperature_panel = TemperaturePanel()
+        outer.addWidget(self.temperature_panel)
 
         self.speed_panel = SpeedPanel(speed_interval_minutes)
         self.speed_panel.run_requested.connect(self.speed_test_requested)
@@ -547,6 +606,10 @@ class StatusWindow(QMainWindow):
         settings_menu = self.menuBar().addMenu("&Settings")
         preferences = settings_menu.addAction("Preferences…")
         preferences.triggered.connect(lambda: self.settings_requested.emit())
+        test_temperature = settings_menu.addAction("Test Temperature Alert…")
+        test_temperature.triggered.connect(
+            lambda: self.temperature_alert_test_requested.emit()
+        )
         settings_menu.addSeparator()
         self.autostart_action = settings_menu.addAction("Open on Startup")
         self.autostart_action.setCheckable(True)
@@ -641,6 +704,9 @@ class SettingsDialog(QDialog):
         autostart_enabled: bool,
         notify_when_restored: bool,
         speed_interval_minutes: int,
+        temperature_alerts_enabled: bool,
+        temperature_warning_c: int,
+        temperature_critical_c: int,
         auto_update_checks: bool,
         auto_install_updates: bool,
     ) -> None:
@@ -684,6 +750,33 @@ class SettingsDialog(QDialog):
         appearance_form.addRow("Theme:", self.theme)
         appearance_form.addRow("Speed sample schedule:", self.speed_interval)
         outer.addWidget(appearance)
+
+        thermals = QGroupBox("CPU Temperature")
+        thermals_form = QFormLayout(thermals)
+        self.temperature_alerts = QCheckBox("Show high-temperature alerts")
+        self.temperature_alerts.setChecked(temperature_alerts_enabled)
+        self.temperature_warning = QSpinBox()
+        self.temperature_warning.setRange(60, 100)
+        self.temperature_warning.setSuffix(" °C")
+        self.temperature_warning.setValue(temperature_warning_c)
+        self.temperature_critical = QSpinBox()
+        self.temperature_critical.setRange(65, 110)
+        self.temperature_critical.setSuffix(" °C")
+        self.temperature_critical.setValue(temperature_critical_c)
+        self.temperature_warning.valueChanged.connect(
+            lambda value: self.temperature_critical.setMinimum(value + 1)
+        )
+        self.temperature_critical.setMinimum(self.temperature_warning.value() + 1)
+        thermals_form.addRow(self.temperature_alerts)
+        thermals_form.addRow("High warning:", self.temperature_warning)
+        thermals_form.addRow("Critical warning:", self.temperature_critical)
+        thermal_note = QLabel(
+            "Sentinel reads Linux hardware sensors locally. Alert recovery uses a 5 °C buffer to prevent repeated popups."
+        )
+        thermal_note.setObjectName("muted")
+        thermal_note.setWordWrap(True)
+        thermals_form.addRow(thermal_note)
+        outer.addWidget(thermals)
 
         updates = QGroupBox("Updates")
         updates_layout = QVBoxLayout(updates)
@@ -730,6 +823,9 @@ class SettingsDialog(QDialog):
             "autostart_enabled": self.autostart.isChecked(),
             "notify_when_restored": self.notify_restored.isChecked(),
             "speed_interval_minutes": int(self.speed_interval.currentData()),
+            "temperature_alerts_enabled": self.temperature_alerts.isChecked(),
+            "temperature_warning_c": self.temperature_warning.value(),
+            "temperature_critical_c": self.temperature_critical.value(),
             "auto_update_checks": self.auto_updates.isChecked(),
             "auto_install_updates": self.auto_install_updates.isChecked(),
         }
@@ -826,11 +922,14 @@ class TrayController:
         self.menu = QMenu(parent)
         self.status_action = QAction("Starting network monitor…", self.menu)
         self.status_action.setEnabled(False)
+        self.temperature_action = QAction("CPU temperature: reading…", self.menu)
+        self.temperature_action.setEnabled(False)
         self.open_action = QAction("Open status", self.menu)
         self.check_action = QAction("Check now", self.menu)
         self.speed_action = QAction("Run speed sample", self.menu)
         self.adapter_menu = self.menu.addMenu("Wi-Fi adapters")
         self.menu.insertAction(self.adapter_menu.menuAction(), self.status_action)
+        self.menu.insertAction(self.adapter_menu.menuAction(), self.temperature_action)
         self.menu.insertSeparator(self.adapter_menu.menuAction())
         self.menu.addAction(self.open_action)
         self.menu.addAction(self.check_action)
@@ -841,6 +940,8 @@ class TrayController:
         self.tray.setContextMenu(self.menu)
         self.tray.setToolTip("DeadSpot Sentinel is starting")
         self.tray.activated.connect(self._activated)
+        self._network_text = "Starting network monitor…"
+        self._temperature_text = "CPU temperature: reading…"
 
     def _activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -872,7 +973,8 @@ class TrayController:
             color = COLORS["red"]
             text = "Internet connection lost"
         self.tray.setIcon(status_icon(color))
-        self.tray.setToolTip(f"DeadSpot Sentinel — {text}")
+        self._network_text = text
+        self._refresh_tooltip()
         self.status_action.setText(text)
         self.adapter_menu.clear()
         for health in snapshot.adapters:
@@ -905,3 +1007,22 @@ class TrayController:
             prefer_action.triggered.connect(
                 lambda _checked=False, d=health.device.name: prefer(d)
             )
+
+    def update_temperature(
+        self, reading: TemperatureReading, level: TemperatureLevel
+    ) -> None:
+        if reading.celsius is None:
+            self._temperature_text = "CPU temperature unavailable"
+        else:
+            suffix = {
+                TemperatureLevel.HIGH: " — HIGH",
+                TemperatureLevel.CRITICAL: " — CRITICAL",
+            }.get(level, "")
+            self._temperature_text = f"CPU {reading.celsius:.1f} °C{suffix}"
+        self.temperature_action.setText(self._temperature_text)
+        self._refresh_tooltip()
+
+    def _refresh_tooltip(self) -> None:
+        self.tray.setToolTip(
+            f"DeadSpot Sentinel — {self._network_text} • {self._temperature_text}"
+        )

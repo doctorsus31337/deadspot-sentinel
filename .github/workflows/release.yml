@@ -47,7 +47,10 @@ jobs:
           fi
       - name: Build release assets
         if: steps.existing.outputs.exists == 'false'
-        run: python scripts/build_release.py --output-dir dist
+        run: |
+          python scripts/build_release.py --output-dir dist
+          python scripts/verify_release_upgrade.py \
+            dist/deadspot-sentinel-v*.zip dist/update.json --from-version 0.4.0
       - name: Tag source and publish release
         if: steps.existing.outputs.exists == 'false'
         env:

@@ -27,3 +27,5 @@ jobs:
           python scripts/build_release.py --output-dir dist
           python -m json.tool dist/update.json >/dev/null
           unzip -t dist/deadspot-sentinel-v*.zip
+          python scripts/verify_release_upgrade.py \
+            dist/deadspot-sentinel-v*.zip dist/update.json --from-version 0.4.0
