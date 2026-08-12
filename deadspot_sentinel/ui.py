@@ -489,6 +489,7 @@ class StatusWindow(QMainWindow):
     exit_requested = pyqtSignal()
     autostart_changed = pyqtSignal(bool)
     auto_update_changed = pyqtSignal(bool)
+    temperature_alert_test_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -605,6 +606,10 @@ class StatusWindow(QMainWindow):
         settings_menu = self.menuBar().addMenu("&Settings")
         preferences = settings_menu.addAction("Preferences…")
         preferences.triggered.connect(lambda: self.settings_requested.emit())
+        test_temperature = settings_menu.addAction("Test Temperature Alert…")
+        test_temperature.triggered.connect(
+            lambda: self.temperature_alert_test_requested.emit()
+        )
         settings_menu.addSeparator()
         self.autostart_action = settings_menu.addAction("Open on Startup")
         self.autostart_action.setCheckable(True)

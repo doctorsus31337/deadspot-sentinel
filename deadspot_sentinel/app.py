@@ -223,6 +223,9 @@ class SentinelApp(QObject):
         self.window.exit_requested.connect(self.quit)
         self.window.autostart_changed.connect(self.set_autostart)
         self.window.auto_update_changed.connect(self.set_auto_update_checks)
+        self.window.temperature_alert_test_requested.connect(
+            self.test_temperature_alert
+        )
         self.tray.open_action.triggered.connect(self.show_window)
         self.tray.check_action.triggered.connect(self.request_check)
         self.tray.speed_action.triggered.connect(self.request_speed_test)
@@ -395,6 +398,15 @@ class SentinelApp(QObject):
         worker = TemperatureWorker(self.temperature_reader)
         worker.signals.completed.connect(self._temperature_ready)
         self.pool.start(worker)
+
+    def test_temperature_alert(self) -> None:
+        self.popup.show_alert(
+            "HIGH TEMP — COOL ASAP (TEST)",
+            "This is a simulated temperature warning. Your CPU did not cross a heat threshold.",
+            COLORS["amber"],
+            "Open status",
+            self.show_window,
+        )
 
     def _temperature_ready(self, reading: TemperatureReading) -> None:
         self.temperature_busy = False

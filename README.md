@@ -135,6 +135,9 @@ state returns to normal; this prevents popup spam while a reading hovers near a
 threshold. Missing or unsupported sensors are reported as unavailable and never
 produce a heat warning.
 
+Use **Settings → Test Temperature Alert…** to verify the popup safely without
+heating the CPU or writing a simulated incident to the activity log.
+
 ## License
 
 [MIT](LICENSE)
