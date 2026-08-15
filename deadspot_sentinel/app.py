@@ -23,6 +23,7 @@ from . import __version__
 from .config import AppConfig, OutageLog, state_dir
 from .network import (
     AdapterHealth,
+    DiagnosticManager,
     HealthState,
     NetworkInspector,
     NetworkSnapshot,
@@ -176,10 +177,12 @@ class SentinelApp(QObject):
         self.update_checker = UpdateChecker()
         self.update_installer = UpdateInstaller()
         self.inspector = NetworkInspector()
+        self.diagnostics = DiagnosticManager()
         self.recovery = RecoveryManager()
         self.speed_sampler = ThroughputSampler()
         self.temperature_reader = TemperatureReader()
         self.pool = QThreadPool.globalInstance()
+        assert self.pool is not None
         self.window = StatusWindow(
             self.config.automatic_failover,
             self.config.speed_sample_interval_minutes,
@@ -203,6 +206,7 @@ class SentinelApp(QObject):
         self.speed_busy = False
         self.temperature_busy = False
         self.update_busy = False
+        self.diagnostic_busy = False
         self.last_snapshot: NetworkSnapshot | None = None
         self.had_online_state = False
         self.was_online: bool | None = None
@@ -232,6 +236,33 @@ class SentinelApp(QObject):
         self.window.auto_update_changed.connect(self.set_auto_update_checks)
         self.window.temperature_alert_test_requested.connect(
             self.test_temperature_alert
+        )
+        self.window.diagnostic_inventory_requested.connect(
+            lambda: self._run_diagnostic(
+                self.diagnostics.adapter_inventory,
+                "Reading all network adapters…",
+            )
+        )
+        self.window.diagnostic_routes_requested.connect(
+            lambda: self._run_diagnostic(
+                self.diagnostics.route_and_dns_report,
+                "Reading routes, addresses, gateways, and DNS…",
+            )
+        )
+        self.window.diagnostic_reconnect_requested.connect(
+            self.diagnostic_reconnect
+        )
+        self.window.diagnostic_restore_selected_requested.connect(
+            self.diagnostic_restore_selected
+        )
+        self.window.diagnostic_restore_all_requested.connect(
+            self.diagnostic_restore_all
+        )
+        self.window.diagnostic_reset_all_requested.connect(
+            self.diagnostic_reset_all
+        )
+        self.window.diagnostic_restart_nm_requested.connect(
+            self.diagnostic_restart_network_manager
         )
         self.tray.open_action.triggered.connect(self.show_window)
         self.tray.check_action.triggered.connect(self.request_check)
@@ -484,6 +515,108 @@ class SentinelApp(QObject):
         self.config.save()
         if self.last_snapshot:
             self._maybe_schedule_speed_sample(self.last_snapshot)
+
+    def _run_diagnostic(
+        self, operation, progress_message: str, *, refresh_after: bool = False
+    ) -> None:
+        if self.diagnostic_busy:
+            return
+        self.diagnostic_busy = True
+        self.window.set_diagnostic_busy(True, progress_message)
+        worker = ActionWorker(operation)
+
+        def completed(ok: bool, message: str) -> None:
+            self.diagnostic_busy = False
+            self.window.set_diagnostic_busy(False)
+            prefix = "COMPLETED" if ok else "FAILED"
+            self.window.show_diagnostic_result(f"{prefix}\n\n{message}")
+            if refresh_after:
+                QTimer.singleShot(1000, self.request_check)
+
+        worker.signals.completed.connect(completed)
+        self.pool.start(worker)
+
+    def diagnostic_reconnect(self, device: str) -> None:
+        if not device:
+            self.window.show_diagnostic_result(
+                "FAILED\n\nSelect a Wi-Fi adapter before reconnecting it."
+            )
+            return
+        answer = QMessageBox.question(
+            self.window,
+            "Reconnect Wi-Fi Adapter?",
+            f"This briefly disconnects {device} and asks NetworkManager to connect it "
+            "again. Continue?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._run_diagnostic(
+            lambda: self.diagnostics.reconnect_adapter(device),
+            f"Reconnecting {device}…",
+            refresh_after=True,
+        )
+
+    def diagnostic_restore_selected(self, device: str) -> None:
+        if not device:
+            self.window.show_diagnostic_result(
+                "FAILED\n\nSelect a Wi-Fi adapter before restoring managed mode."
+            )
+            return
+        answer = QMessageBox.question(
+            self.window,
+            "Restore Managed Mode?",
+            f"This will briefly take {device} down, switch it from monitor mode to managed mode, "
+            "and return it to NetworkManager. Continue?",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._run_diagnostic(
+                lambda: self.diagnostics.restore_managed_mode([device]),
+                f"Restoring managed mode on {device}…",
+                refresh_after=True,
+            )
+
+    def diagnostic_restore_all(self) -> None:
+        answer = QMessageBox.question(
+            self.window,
+            "Restore All Wi-Fi Adapters?",
+            "This will briefly take every detected Wi-Fi adapter down, restore managed mode, "
+            "and return each adapter to NetworkManager. Continue?",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._run_diagnostic(
+                self.diagnostics.restore_all_managed_mode,
+                "Restoring managed mode on all Wi-Fi adapters…",
+                refresh_after=True,
+            )
+
+    def diagnostic_reset_all(self) -> None:
+        answer = QMessageBox.question(
+            self.window,
+            "Reset All Network Adapters?",
+            "This cycles NetworkManager networking off and back on. Every connection will be "
+            "interrupted temporarily. If networking cannot be re-enabled normally, Sentinel may "
+            "request administrator authentication to restart NetworkManager. Continue?",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._run_diagnostic(
+                self.diagnostics.reset_all_adapters,
+                "Resetting all NetworkManager adapters…",
+                refresh_after=True,
+            )
+
+    def diagnostic_restart_network_manager(self) -> None:
+        answer = QMessageBox.question(
+            self.window,
+            "Restart NetworkManager?",
+            "This restarts the NetworkManager service and temporarily interrupts every network "
+            "connection. A system authentication prompt will appear. Continue?",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._run_diagnostic(
+                self.diagnostics.restart_network_manager,
+                "Restarting NetworkManager…",
+                refresh_after=True,
+            )
 
     def open_activity_log(self) -> None:
         self._open_log_file(self.outages.path, "Activity Log")

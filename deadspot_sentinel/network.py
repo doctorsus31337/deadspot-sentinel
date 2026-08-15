@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 CommandRunner = Callable[[Sequence[str], float], "CommandResult"]
-SAFE_INTERFACE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+SAFE_INTERFACE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,6 +447,224 @@ class ThroughputSampler:
             now,
             f"Bounded {downloaded / 1_000_000:.1f} MB download sample via {device}.",
         )
+
+
+class DiagnosticManager:
+    """Read network state and perform explicit, narrowly scoped repairs."""
+
+    def __init__(self, runner: CommandRunner = run_command) -> None:
+        self.runner = runner
+
+    @staticmethod
+    def _valid_device(device: str) -> bool:
+        return bool(SAFE_INTERFACE.fullmatch(device))
+
+    def _report(self, sections: Sequence[tuple[str, Sequence[str]]]) -> tuple[bool, str]:
+        rendered: list[str] = []
+        successes = 0
+        for title, command in sections:
+            result = self.runner(command, 8.0)
+            if result.returncode == 0:
+                successes += 1
+                body = result.stdout.strip() or "(no output)"
+            else:
+                detail = result.stderr.strip() or result.stdout.strip()
+                body = f"ERROR: {detail or 'command failed'}"
+            rendered.append(f"=== {title} ===\n{body}")
+        return successes == len(sections), "\n\n".join(rendered)
+
+    def adapter_inventory(self) -> tuple[bool, str]:
+        return self._report(
+            (
+                (
+                    "NetworkManager devices",
+                    (
+                        "nmcli",
+                        "-f",
+                        "DEVICE,TYPE,STATE,CONNECTION",
+                        "device",
+                        "status",
+                    ),
+                ),
+                ("Kernel interfaces", ("ip", "-brief", "address", "show")),
+                ("Wi-Fi modes", ("iw", "dev")),
+            )
+        )
+
+    def route_and_dns_report(self) -> tuple[bool, str]:
+        return self._report(
+            (
+                ("Routes", ("ip", "route", "show", "table", "all")),
+                (
+                    "Addressing and DNS",
+                    (
+                        "nmcli",
+                        "-f",
+                        "GENERAL.DEVICE,GENERAL.STATE,IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,IP6.ADDRESS,IP6.GATEWAY,IP6.DNS",
+                        "device",
+                        "show",
+                    ),
+                ),
+            )
+        )
+
+    def reset_all_adapters(self) -> tuple[bool, str]:
+        disabled = self.runner(("nmcli", "networking", "off"), 15.0)
+        if disabled.returncode != 0:
+            detail = disabled.stderr.strip() or disabled.stdout.strip()
+            return False, detail or "NetworkManager could not disable networking."
+
+        enabled = self.runner(("nmcli", "networking", "on"), 20.0)
+        if enabled.returncode == 0:
+            return (
+                True,
+                "All NetworkManager adapters were reset. Connections may take a moment to return.",
+            )
+
+        first_error = enabled.stderr.strip() or enabled.stdout.strip()
+        retry = self.runner(("nmcli", "networking", "on"), 20.0)
+        if retry.returncode == 0:
+            return (
+                True,
+                "All NetworkManager adapters were reset; networking recovered on retry.",
+            )
+
+        restarted = self.runner(
+            ("pkexec", "systemctl", "restart", "NetworkManager.service"), 45.0
+        )
+        if restarted.returncode == 0:
+            post_restart = self.runner(("nmcli", "networking", "on"), 20.0)
+            if post_restart.returncode == 0:
+                return (
+                    True,
+                    "Adapter reset completed; networking recovered by restarting NetworkManager.",
+                )
+            recovery_error = (
+                post_restart.stderr.strip()
+                or post_restart.stdout.strip()
+                or "networking remained disabled after NetworkManager restarted"
+            )
+            return False, f"{first_error}; recovery failed: {recovery_error}"
+
+        recovery_error = (
+            restarted.stderr.strip()
+            or restarted.stdout.strip()
+            or retry.stderr.strip()
+            or retry.stdout.strip()
+        )
+        detail = first_error or "Networking could not be re-enabled."
+        if recovery_error:
+            detail = f"{detail}; recovery failed: {recovery_error}"
+        return False, detail
+
+    def reconnect_adapter(self, device: str) -> tuple[bool, str]:
+        if not self._valid_device(device):
+            return False, "The selected adapter name is invalid."
+        self.runner(("nmcli", "device", "disconnect", device), 15.0)
+        connected = self.runner(("nmcli", "device", "connect", device), 30.0)
+        if connected.returncode != 0:
+            detail = connected.stderr.strip() or connected.stdout.strip()
+            return False, detail or f"NetworkManager could not reconnect {device}."
+        return True, f"NetworkManager reconnected {device}."
+
+    def restore_all_managed_mode(self) -> tuple[bool, str]:
+        discovered = self.runner(("iw", "dev"), 8.0)
+        if discovered.returncode != 0:
+            detail = discovered.stderr.strip() or discovered.stdout.strip()
+            return False, detail or "Wi-Fi interfaces could not be discovered."
+        devices = [
+            match.group(1)
+            for match in re.finditer(
+                r"^\s*Interface\s+(\S+)\s*$",
+                discovered.stdout,
+                re.MULTILINE,
+            )
+        ]
+        if not devices:
+            return False, "No Wi-Fi interfaces were reported by iw."
+        if any(not self._valid_device(device) for device in devices):
+            return False, "An invalid Wi-Fi adapter name was reported by iw."
+        return self.restore_managed_mode(devices)
+
+    def restore_managed_mode(self, devices: Sequence[str]) -> tuple[bool, str]:
+        targets = list(dict.fromkeys(devices))
+        if not targets:
+            return False, "No Wi-Fi adapter was selected."
+        if any(not self._valid_device(device) for device in targets):
+            return False, "An invalid Wi-Fi adapter name was rejected."
+
+        failures: list[str] = []
+        for device in targets:
+            down = self.runner(
+                ("pkexec", "ip", "link", "set", "dev", device, "down"), 30.0
+            )
+            if down.returncode != 0:
+                detail = (
+                    down.stderr.strip()
+                    or down.stdout.strip()
+                    or "could not lower interface"
+                )
+                failures.append(f"{device}: {detail}")
+                continue
+
+            mode = self.runner(
+                ("pkexec", "iw", "dev", device, "set", "type", "managed"),
+                30.0,
+            )
+            if mode.returncode != 0:
+                detail = mode.stderr.strip() or mode.stdout.strip() or "mode change failed"
+                failures.append(f"{device}: {detail}")
+
+            up_command = ("pkexec", "ip", "link", "set", "dev", device, "up")
+            raised = self.runner(up_command, 30.0)
+            managed = self.runner(
+                ("nmcli", "device", "set", device, "managed", "yes"), 30.0
+            )
+
+            if raised.returncode != 0:
+                raised_retry = self.runner(up_command, 30.0)
+                if raised_retry.returncode != 0:
+                    detail = (
+                        raised_retry.stderr.strip()
+                        or raised_retry.stdout.strip()
+                        or raised.stderr.strip()
+                        or raised.stdout.strip()
+                        or "interface could not be raised"
+                    )
+                    failures.append(f"{device}: {detail}")
+
+            if managed.returncode != 0:
+                detail = (
+                    managed.stderr.strip()
+                    or managed.stdout.strip()
+                    or "NetworkManager control could not be restored"
+                )
+                failures.append(f"{device}: {detail}")
+
+            connected = self.runner(("nmcli", "device", "connect", device), 30.0)
+            if connected.returncode != 0:
+                detail = (
+                    connected.stderr.strip()
+                    or connected.stdout.strip()
+                    or "NetworkManager could not reconnect the interface"
+                )
+                failures.append(f"{device}: {detail}")
+
+        if failures:
+            return False, "Managed-mode restore incomplete:\n" + "\n".join(
+                f"- {failure}" for failure in failures
+            )
+        names = ", ".join(targets)
+        return True, f"Restored managed mode and NetworkManager control for {names}."
+
+    def restart_network_manager(self) -> tuple[bool, str]:
+        result = self.runner(
+            ("pkexec", "systemctl", "restart", "NetworkManager.service"), 45.0
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            return False, detail or "NetworkManager could not be restarted."
+        return True, "NetworkManager was restarted. Connections may take a moment to return."
 
 
 class RecoveryManager:

@@ -30,9 +30,11 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QPlainTextEdit,
     QScrollArea,
     QSpinBox,
     QSystemTrayIcon,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -493,6 +495,13 @@ class StatusWindow(QMainWindow):
     autostart_changed = pyqtSignal(bool)
     auto_update_changed = pyqtSignal(bool)
     temperature_alert_test_requested = pyqtSignal()
+    diagnostic_inventory_requested = pyqtSignal()
+    diagnostic_routes_requested = pyqtSignal()
+    diagnostic_reconnect_requested = pyqtSignal(str)
+    diagnostic_restore_selected_requested = pyqtSignal(str)
+    diagnostic_restore_all_requested = pyqtSignal()
+    diagnostic_reset_all_requested = pyqtSignal()
+    diagnostic_restart_nm_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -501,7 +510,9 @@ class StatusWindow(QMainWindow):
         autostart_enabled: bool,
         auto_update_checks: bool,
     ) -> None:
-        super().__init__()
+        # Keep the dashboard out of XFCE's task list; the monitor itself lives
+        # in the persistent system-tray icon.
+        super().__init__(None, Qt.WindowType.Tool)
         self.setWindowTitle("DeadSpot Sentinel")
         self.setMinimumSize(550, 570)
         self.resize(640, 760)
@@ -582,8 +593,144 @@ class StatusWindow(QMainWindow):
         outer.addLayout(controls)
 
         scroll.setWidget(root)
-        self.setCentralWidget(scroll)
+        tabs = QTabWidget()
+        tabs.setObjectName("main_tabs")
+        tabs.addTab(scroll, "Status")
+        tabs.addTab(self._build_diagnostics_tab(), "Diagnostics")
+        self.setCentralWidget(tabs)
         self.setWindowIcon(status_icon(COLORS["accent"]))
+
+    def _diagnostic_button(self, text: str, object_name: str) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName(object_name)
+        self._diagnostic_buttons.append(button)
+        return button
+
+    def _build_diagnostics_tab(self) -> QWidget:
+        root = QWidget()
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(18, 18, 18, 18)
+        outer.setSpacing(12)
+        self._diagnostic_buttons: list[QPushButton] = []
+
+        title = QLabel("NETWORK DIAGNOSTICS & REPAIR")
+        title.setFont(QFont(title.font().family(), 15, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {COLORS['accent']}; letter-spacing: 1px;")
+        outer.addWidget(title)
+
+        description = QLabel(
+            "Inspect every adapter, review routes and DNS, or run a focused repair. "
+            "Repairs run only after you click their button; privileged repairs use a system authentication prompt."
+        )
+        description.setObjectName("muted")
+        description.setWordWrap(True)
+        outer.addWidget(description)
+
+        selector_row = QHBoxLayout()
+        selector_row.addWidget(QLabel("Wi-Fi adapter:"))
+        self.diagnostic_adapter = QComboBox()
+        self.diagnostic_adapter.setObjectName("diagnostic_adapter")
+        self.diagnostic_adapter.addItem("No Wi-Fi adapters detected", "")
+        selector_row.addWidget(self.diagnostic_adapter, 1)
+        outer.addLayout(selector_row)
+
+        inspect_group = QGroupBox("Inspect")
+        inspect_layout = QHBoxLayout(inspect_group)
+        inventory = self._diagnostic_button(
+            "View all network adapters", "diagnostic_inventory"
+        )
+        routes = self._diagnostic_button(
+            "View routes & DNS", "diagnostic_routes_dns"
+        )
+        inventory.clicked.connect(self.diagnostic_inventory_requested)
+        routes.clicked.connect(self.diagnostic_routes_requested)
+        inspect_layout.addWidget(inventory)
+        inspect_layout.addWidget(routes)
+        outer.addWidget(inspect_group)
+
+        repair_group = QGroupBox("Repair")
+        repair_layout = QVBoxLayout(repair_group)
+        first_row = QHBoxLayout()
+        reconnect = self._diagnostic_button(
+            "Reconnect selected adapter", "diagnostic_reconnect"
+        )
+        restore_selected = self._diagnostic_button(
+            "Restore selected to managed mode", "diagnostic_restore_selected"
+        )
+        reconnect.clicked.connect(
+            lambda: self.diagnostic_reconnect_requested.emit(
+                str(self.diagnostic_adapter.currentData() or "")
+            )
+        )
+        restore_selected.clicked.connect(
+            lambda: self.diagnostic_restore_selected_requested.emit(
+                str(self.diagnostic_adapter.currentData() or "")
+            )
+        )
+        first_row.addWidget(reconnect)
+        first_row.addWidget(restore_selected)
+        repair_layout.addLayout(first_row)
+
+        second_row = QHBoxLayout()
+        restore_all = self._diagnostic_button(
+            "Restore ALL Wi-Fi to managed mode", "diagnostic_restore_all"
+        )
+        reset_all = self._diagnostic_button(
+            "Reset all network adapters", "diagnostic_reset_all"
+        )
+        restore_all.clicked.connect(self.diagnostic_restore_all_requested)
+        reset_all.clicked.connect(self.diagnostic_reset_all_requested)
+        second_row.addWidget(restore_all)
+        second_row.addWidget(reset_all)
+        repair_layout.addLayout(second_row)
+
+        restart = self._diagnostic_button(
+            "Restart NetworkManager service", "diagnostic_restart_nm"
+        )
+        restart.clicked.connect(self.diagnostic_restart_nm_requested)
+        repair_layout.addWidget(restart)
+        outer.addWidget(repair_group)
+
+        warning = QLabel(
+            "Resetting adapters or restarting NetworkManager temporarily interrupts every network connection. "
+            "Restoring managed mode takes the selected Wi-Fi interface down briefly."
+        )
+        warning.setWordWrap(True)
+        warning.setStyleSheet(f"color: {COLORS['amber']};")
+        outer.addWidget(warning)
+
+        self.diagnostic_output = QPlainTextEdit()
+        self.diagnostic_output.setObjectName("diagnostic_output")
+        self.diagnostic_output.setReadOnly(True)
+        self.diagnostic_output.setPlaceholderText(
+            "Diagnostic results will appear here."
+        )
+        self.diagnostic_output.setMinimumHeight(190)
+        outer.addWidget(self.diagnostic_output, 1)
+        return root
+
+    def set_diagnostic_adapters(self, devices: list[str]) -> None:
+        current = str(self.diagnostic_adapter.currentData() or "")
+        unique = list(dict.fromkeys(device for device in devices if device))
+        self.diagnostic_adapter.blockSignals(True)
+        self.diagnostic_adapter.clear()
+        if unique:
+            for device in unique:
+                self.diagnostic_adapter.addItem(device, device)
+            selected = self.diagnostic_adapter.findData(current)
+            self.diagnostic_adapter.setCurrentIndex(max(selected, 0))
+        else:
+            self.diagnostic_adapter.addItem("No Wi-Fi adapters detected", "")
+        self.diagnostic_adapter.blockSignals(False)
+
+    def set_diagnostic_busy(self, busy: bool, message: str = "") -> None:
+        for button in self._diagnostic_buttons:
+            button.setEnabled(not busy)
+        if busy and message:
+            self.diagnostic_output.setPlainText(message)
+
+    def show_diagnostic_result(self, message: str) -> None:
+        self.diagnostic_output.setPlainText(message)
 
     def _build_menu(self, autostart_enabled: bool, auto_update_checks: bool) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -652,6 +799,9 @@ class StatusWindow(QMainWindow):
         speed_samples: dict[str, SpeedSample] | None = None,
     ) -> None:
         self._last_snapshot = snapshot
+        self.set_diagnostic_adapters(
+            [adapter.device.name for adapter in snapshot.adapters]
+        )
         active = snapshot.default_adapter
         self.speed_panel.set_active_latency(active.latency_ms if active else None)
         active_sample = None
@@ -857,8 +1007,10 @@ class AlertPopup(QFrame):
             None,
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint,
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus,
         )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setObjectName("card")
         self.setFixedWidth(370)
         self.setStyleSheet(
@@ -917,8 +1069,6 @@ class AlertPopup(QFrame):
         self.adjustSize()
         self._move_to_corner()
         self.show()
-        self.raise_()
-        self.activateWindow()
 
     def show_progress_alert(self, title: str, body: str, color: str) -> None:
         self.show_alert(title, body, color)

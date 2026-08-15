@@ -23,7 +23,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Validate source
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Validate release source
         run: |
           python -m compileall -q deadspot_sentinel run.py scripts tests
           python -m unittest discover -s tests -v
@@ -50,7 +52,7 @@ jobs:
         run: |
           python scripts/build_release.py --output-dir dist
           python scripts/verify_release_upgrade.py \
-            dist/deadspot-sentinel-v*.zip dist/update.json --from-version 0.4.1
+            dist/deadspot-sentinel-v*.zip dist/update.json --from-version 0.4.2
       - name: Tag source and publish release
         if: steps.existing.outputs.exists == 'false'
         env:
