@@ -11,11 +11,14 @@ DoctorSUS brainstormed this application due to his lack of patience for living
 in an internet dead spot. He needed a better solution than discovering an outage
 after everything had already crashed—and that is when this brainchild was born.
 
-## Highlights in v0.4.2
+## Highlights in v0.4.3
 
 - Roughly one-second connectivity checks with interface-bound ICMP and HTTP probes.
 - Distinct green, amber, and red sentinel-shield tray states.
-- Persistent desktop popups for connection loss and restoration.
+- A fully tray-detached dashboard with no XFCE task-list entry.
+- Passive desktop alerts that never activate themselves or steal keyboard focus.
+- A real Diagnostics tab for adapter inventory, routes and DNS, selected-adapter
+  reconnects, managed-mode restoration, adapter resets, and NetworkManager restarts.
 - Dual-Wi-Fi status, reconnect controls, route preference, and opt-in failover.
 - Lightweight 2 MB download-only throughput samples on the active route.
 - Four themes, XFCE autostart, activity logs, and a terminal-free launcher.
@@ -38,7 +41,7 @@ Install the operating-system prerequisites:
 
 ```bash
 sudo apt update
-sudo apt install python3-venv network-manager curl iputils-ping libegl1 libxcb-cursor0
+sudo apt install python3-venv network-manager curl iputils-ping iw policykit-1 libegl1 libxcb-cursor0
 ```
 
 Download and extract a release, then run:

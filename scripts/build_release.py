@@ -12,6 +12,7 @@ REPOSITORY = "doctorsus31337/deadspot-sentinel"
 EXCLUDED_PARTS = {
     ".git",
     ".qa-venv",
+    ".pytest_cache",
     ".ruff_cache",
     ".venv",
     "__pycache__",
